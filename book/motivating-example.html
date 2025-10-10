@@ -167,7 +167,7 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="motivating-example---task-manager"><a class="header" href="#motivating-example---task-manager">Motivating example - task manager</a></h1>
-<p>Imagine you have an app (or several) that manages many different kinds of long-running tasks. And you're a stickler for avoiding unnecessary communications, so you want the client to keep track of all pending tasks and only receive status updates, never poll. So you write a re-usable <code>TaskManager</code> interface to encapsulate the common logic of spawning, tracking, and optionally canceling tasks.</p>
+<p>Imagine you have an app (or several) that manages many different kinds of long-running tasks. And you're a stickler for avoiding unnecessary communications, so you want the client to keep track of all pending tasks and only receive status updates, never poll. So you write a reusable <code>TaskManager</code> interface to encapsulate the common logic of spawning, tracking, and optionally canceling tasks.</p>
 <pre><code>interface TaskManager&lt;SpawnPayload, State, Error&gt; @(Client, Server) {
     objects {
         spawn: std.Request&lt;
@@ -185,19 +185,23 @@
     }
 
     impl @(Server) {
+        // Each TaskManager Server must specify how to spawn its tasks.
         new_task: NewTask&lt;SpawnPayload&gt; -&gt; void,
     }
 
     methods @(Server) {
+        // The server's tasks can invoke this method to send status updates to clients.
         post_status: PostTaskStatus&lt;State&gt; -&gt; void,
     }
 
+    // Clients can request to spawn and cancel tasks.
     methods @(Client) {
         spawn: async SpawnPayload -&gt; result&lt;SpawnSuccess, SpawnError&lt;Error&gt;&gt;,
         cancel: async TaskId -&gt; result&lt;void, CancelError&gt;,
     }
 
     state {
+        // Clients will be provided a list of all pending tasks when they first connect.
         pending_tasks: [TaskId],
     }
 }
@@ -214,9 +218,14 @@ struct SpawnSuccess {
 <p>One of your apps is a worker for a pipeline that downloads and transcodes cat videos:</p>
 <pre><code>interface CatVideoTranscoder @(Client, Server) {
     objects {
-        cat_video_downloads: TaskManager&lt;CatUrl, CatState, CatDownloadSpawnError&gt; @(Client, Server),
+        cat_video_downloads:
+            TaskManager&lt;
+                CatUrl, CatVideoDownloadState, CatDownloadSpawnError,
+            &gt; @(Client, Server),
 
-        h264_to_h265_transcoding: TaskManager&lt;CatVideoId, VideoTranscodingState, VideoTranscodingSpawnError&gt; @(Client, Server),
+        h264_to_h265_transcoding: TaskManager&lt;
+            CatVideoId, VideoTranscodingState, VideoTranscodingSpawnError,
+        &gt; @(Client, Server),
     }
 }
 
@@ -246,6 +255,22 @@ struct SpawnSuccess {
 
         </div>
 
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
 
 
 

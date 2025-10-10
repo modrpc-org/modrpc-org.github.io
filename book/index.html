@@ -167,16 +167,33 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>Modrpc is a RPC (remote procedure call) framework much like gRPC, Thrift, and Cap'n Proto. Users describe their application's interface in modrpc's interface definition language (IDL), and boilerplate code to implement the interface's participants is automatically generated in any of the languages that modrpc supports. Here's what a simple modrpc schema looks like:</p>
+<p>Modrpc is a RPC (remote procedure call) framework much like <a href="https://grpc.io">gRPC</a>, <a href="https://thrift.apache.org/">Thrift</a>, and <a href="https://capnproto.org/">Cap'n Proto</a>. It aims to make building your complex mesh of event-driven apps a breeze. You describe your applications' interfaces in modrpc's interface definition language (IDL) and glue code is generated which provides the framework to implement the interfaces' participants.</p>
+<p>Currently modrpc is a tech-demo, not something that can be used in a professional setting. Rust is the only supported language, but there are tentative plans to support Python and TypeScript.</p>
+<p>Check out <a href="https://github.com/modrpc-org/chat-modrpc-example">chat-modrpc-example</a> to see a full working example application.</p>
+<p>Check out the <a href="./getting-started.html">Getting Started</a> tutorial to build your first modrpc server and client.</p>
+<p>Modrpc focuses on the following areas:</p>
+<ul>
+<li>modularity</li>
+<li>portability</li>
+<li>application meshes</li>
+<li>RPC over multicast</li>
+<li>performance</li>
+</ul>
+<p>Here's a sample of what a modrpc schema looks like:</p>
 <pre><code>import std ".modrpc/std.modrpc"
 
+// Define a Chat interface with Client and Server roles
 interface Chat @(Client, Server) {
     objects {
+        // Define a client -&gt; server request for clients to register their alias.
         register: std.Request&lt;
             RegisterRequest,
             result&lt;void, RegisterError&gt;,
         &gt; @(Client, Server),
 
+        // Define a client -&gt; server request for clients to send a message.
+        // All clients will see each others' requests and the corresponding responses,
+        so no separate mechanism for the server to broadcast sent messages is required.
         send_message: std.Request&lt;
             SendMessageRequest,
             result&lt;void, SendMessageError&gt;,
@@ -184,12 +201,14 @@ interface Chat @(Client, Server) {
     }
 
     state {
+        // Server will provide to clients the full list of currently online users when
+        // they connect.
         users: [RegisteredUser],
     }
 }
 
 struct RegisteredUser {
-    endpoint_addr: u64,
+    endpoint: u64,
     alias: string,
 }
 
@@ -198,8 +217,8 @@ struct RegisterRequest {
 }
 
 enum RegisterError {
+    Internal { token: string },
     UserAlreadyExists,
-    Internal,
 }
 
 struct SendMessageRequest {
@@ -207,18 +226,40 @@ struct SendMessageRequest {
 }
 
 enum SendMessageError {
-    Internal,
+    Internal { token: string },
     InsufficientRizz,
 }
 </code></pre>
-<p>Check out <a href="https://github.com/modrpc-org/chat-modrpc-example">chat-modrpc-example</a> to see a working example application.</p>
-<p>Modrpc focuses on the following areas:</p>
-<ul>
-<li>modularity</li>
-<li>portability</li>
-<li>RPC over multicast</li>
-<li>performance</li>
-</ul>
+<h2 id="modularity"><a class="header" href="#modularity">Modularity</a></h2>
+<p>Modrpc allows users to define interfaces that can be implemented once in Rust and imported and reused as components of larger interfaces. In the earlier example, we encountered the <code>std.Request</code> interface from modrpc's standard library. As you might've guessed, this interface provides the request-response pattern that comes baked into traditional RPC frameworks.</p>
+<p>The definition of <code>std.Request</code>:</p>
+<pre><code>interface Request&lt;Req, Resp&gt; @(Client, Server) {
+    events @(Client) -&gt; @(Client, Server) {
+        private request: Request&lt;Req&gt;,
+    }
+
+    events @(Server) -&gt; @(Client) {
+        private response: Response&lt;Resp&gt;,
+    }
+
+    impl @(Server) {
+        // Downstream interface roles acting as a Request Server must supply an async
+        // `handler` function to respond to requests.
+        handler: async Req -&gt; Resp,
+    }
+
+    methods @(Client) {
+        // Downstream interface roles acting as a Request Client can invoke the `call`
+        // method to send a request event and asynchronously wait for the server's
+        // response.
+        call: async Req -&gt; Resp,
+    }
+}
+</code></pre>
+<p>All interfaces boil down to events that can be sent from some set of roles to some other set of roles. In the case of <code>std.Request</code>, only clients can send requests, and both clients and servers will receive them. This allows clients to observe requests made by other clients when doing RPC-over-multicast.</p>
+<p>Common logic for a reusable interface is hand-written once in Rust, and downstream interfaces and applications can invoke the logic via methods that the reusable interface exposes. An example of this is the <code>call</code> method on <code>std.Request</code>.</p>
+<p>If the reusable interface requires application-specific logic, these are specified via <code>impl</code> blocks. In the case of <code>std.Request</code>, implementers of a request server must provide an async function that receives a request and produces a response.</p>
+<p>Under the hood, the reusable Rust implementation of the <code>Request</code> interface handles request payload encapsulation and response tracking / notification at the <a href="https://github.com/modrpc-org/modrpc/blob/c8be8fde5eb34fcc23949bd2cc712e1939298b10/std-modrpc/rust/src/role_impls/request_client.rs#L192-L248">client</a> and calling the user's supplied request handler at the <a href="https://github.com/modrpc-org/modrpc/blob/c8be8fde5eb34fcc23949bd2cc712e1939298b10/std-modrpc/rust/src/role_impls/request_server.rs#L91-L115">server</a>.</p>
 <h2 id="portability"><a class="header" href="#portability">Portability</a></h2>
 <p>This refers to making modrpc usable in as many situations as possible. There are a few design goals aimed at that (some are currently aspirational):</p>
 <ul>
@@ -226,14 +267,16 @@ enum SendMessageError {
 <li>Be transport-agnostic - support communication over shared-memory, TCP, WebSockets, or even an embedded radio.</li>
 <li>Try to be as lightweight as possible.</li>
 </ul>
+<h2 id="application-meshes"><a class="header" href="#application-meshes">Application meshes</a></h2>
+<p>Modrpc's runtime is multitenant in the sense that a single runtime can drive many (potentially short-lived) transports and instances of interface roles, and multiple interfaces can be multiplexed over a single transport.</p>
 <h2 id="rpc-over-multicast"><a class="header" href="#rpc-over-multicast">RPC over multicast</a></h2>
-<p>Here "multicast" means events for a modrpc interface being broadcasted to all interested peers. This allows you to, for example, have all clients see each others' requests and the server's responses to those requests. This is useful when developing collaborative apps and in many cases allows you to avoid building dedicated mechanisms to sync state among peers.</p>
+<p>Here "multicast" means events for a modrpc interface being broadcasted to all interested peers. This allows you to, for example, have all clients see each others' requests and the server's responses to those requests. This is useful when developing collaborative apps and in many cases allows you to avoid building additional mechanisms to sync state among peers.</p>
 <h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
-<p>Modrpc aims to be lightweight and easy to setup in simple single-threaded scenarios, but also aims to be easily scalable to support high-throughput, high concurrency scenarios (tens to hundreds of thousands of tasks interacting with the RPC system). The runtime is written in Rust and is <code>async</code> and thread-per-core. Some examples of performance-oriented design decisions:</p>
+<p>Modrpc aims to be lightweight and easy to setup in simple single-threaded scenarios, but also tries to be easily scalable to support high-throughput, high concurrency scenarios - think tens to hundreds of thousands of tasks interacting with the RPC system. The runtime is written in Rust and is <code>async</code> and thread-per-core. Some examples of performance-oriented design decisions:</p>
 <ul>
-<li>Avoid frequent heap allocations
+<li>Make heap allocation after startup optional
 <ul>
-<li>A fixed-size, async buffer pool is used to allocate messages.</li>
+<li>Fixed-size, async buffer pools are used to allocate messages.</li>
 <li>Messages can be serialized and deserialized without allocations.</li>
 </ul>
 </li>
@@ -260,31 +303,6 @@ enum SendMessageError {
 </ul>
 <p>Check out the <a href="https://github.com/modrpc-org/modrpc/blob/c8be8fde5eb34fcc23949bd2cc712e1939298b10/examples/local-benchmark/src/main.rs">local-benchmark</a> example application to get a sense for what configuring a multithreaded modrpc runtime with multiple transports looks like.</p>
 <p>To get an idea of current performance, try out the <a href="https://github.com/modrpc-org/modrpc/tree/main/examples/p2p-benchmark">p2p-benchmark</a> example application - it has a single-threaded server being spammed with very cheap requests by a multi-threaded client. On my laptop the server is able to serve 3.8M+ requests/second.</p>
-<h2 id="modularity"><a class="header" href="#modularity">Modularity</a></h2>
-<p>Modrpc allows users to define interfaces that can be implemented once in Rust and imported and re-used as components of larger interfaces. In the earlier example, we encountered the <code>std.Request</code> interface from modrpc's standard library. As you might've guessed, this interface provides the request-response pattern that comes baked into traditional RPC frameworks.</p>
-<p>The definition of <code>std.Request</code>:</p>
-<pre><code>interface Request&lt;Req, Resp&gt; @(Client, Server) {
-    events @(Client) -&gt; @(Client, Server) {
-        private request: Request&lt;Req&gt;,
-    }
-
-    events @(Server) -&gt; @(Client) {
-        private response: Response&lt;Resp&gt;,
-    }
-
-    impl @(Server) {
-        handler: async Req -&gt; Resp,
-    }
-
-    methods @(Client) {
-        call: async Req -&gt; Resp,
-    }
-}
-</code></pre>
-<p>All interfaces boil down to events that can be sent from some set of roles to some other set of roles. In the case of <code>std.Request</code>, only clients can send requests, and both clients and servers will receive them. This allows clients to observe requests made by other clients when doing RPC-over-multicast.</p>
-<p>Common logic for a re-usable interface is hand-written once in Rust, and downstream interfaces and applications can invoke the logic via methods that the re-usable interface exposes. An example of this is the <code>call</code> method on <code>std.Request</code>.</p>
-<p>If the re-usable interface requires application-specific logic, these are specified via <code>impl</code> blocks. In the case of <code>std.Request</code>, implementers of a request server must provide an async function that receives a request and produces a response.</p>
-<p>Under the hood, the re-usable Rust implementation of the <code>Request</code> interface handles request payload encapsulation and response tracking / notification at the <a href="https://github.com/modrpc-org/modrpc/blob/c8be8fde5eb34fcc23949bd2cc712e1939298b10/std-modrpc/rust/src/role_impls/request_client.rs#L192-L248">client</a> and calling the user's supplied request handler at the <a href="https://github.com/modrpc-org/modrpc/blob/c8be8fde5eb34fcc23949bd2cc712e1939298b10/std-modrpc/rust/src/role_impls/request_server.rs#L91-L115">server</a>.</p>
 
                     </main>
 
@@ -309,6 +327,22 @@ enum SendMessageError {
 
         </div>
 
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
 
 
 
